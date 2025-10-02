@@ -1,3 +1,0 @@
-apache-airflow[postgres]==2.9.0
-psycopg2-binary
-requests

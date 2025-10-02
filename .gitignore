@@ -3,6 +3,10 @@ __pycache__/
 *.py[codz]
 *$py.class
 
+# Airflow
+airflow/logs/
+airflow/tmp/
+airflow/__pycache__/
 # C extensions
 *.so
 
@@ -144,6 +148,7 @@ ENV/
 env.bak/
 venv.bak/
 
+postgres_data/
 # Spyder project settings
 .spyderproject
 .spyproject
