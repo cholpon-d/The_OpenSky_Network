@@ -90,3 +90,25 @@ services:
     cpus: 0.5
     depends_on:
       - spark-master
+  
+  clickhouse:
+    image: clickhouse/clickhouse-server:24.3
+    user: "101:101"
+    container_name: clickhouse-server
+    ports:
+      - "8123:8123"
+      - "9000:9000"
+    environment:
+      - CLICKHOUSE_DB=airflow
+      - CLICKHOUSE_USER=airflow
+      - CLICKHOUSE_PASSWORD=airflow
+      - CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT=1
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+volumes:
+    clickhouse_data:
+  

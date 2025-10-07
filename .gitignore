@@ -149,6 +149,7 @@ env.bak/
 venv.bak/
 
 postgres_data/
+clickhouse_data
 # Spyder project settings
 .spyderproject
 .spyproject
