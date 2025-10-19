@@ -1,12 +1,12 @@
 version: "3.9"
 
-x-airflow-common:
-  &airflow-common
+x-airflow-common: &airflow-common
   build:
     context: ./airflow
     dockerfile: Dockerfile
   env_file:
     - .env
+  user: "0:0"
   environment:
     - AIRFLOW__CORE__EXECUTOR=LocalExecutor
     - AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
@@ -17,11 +17,20 @@ x-airflow-common:
     - ./airflow/dags:/opt/airflow/dags
     - ./airflow/logs:/opt/airflow/logs
     - ./airflow/plugins:/opt/airflow/plugins
+    - ./spark/scripts:/opt/scripts
+    - ./shared_data:/opt/shared_data
+    - /var/run/docker.sock:/var/run/docker.sock
   depends_on:
     - postgres
+    - clickhouse
+    - spark-master
+  networks:
+    - spark-net
+    - default
 
 services:
   postgres:
+    container_name: postgres-db
     image: postgres:15
     env_file:
       - .env
@@ -33,68 +42,111 @@ services:
       - "5433:5432"
     volumes:
       - ./postgres_data:/var/lib/postgresql/data
+    deploy:
+      resources:
+        limits:
+          cpus: "0.3"
+          memory: 400M
 
-  #airflow-init:
-   # <<: *airflow-common
-    #entrypoint: /bin/bash
-    #command:
-    #  - -c
-     # - |
-      #  airflow db init &&
-       # airflow users create \
-        #  --username admin \
-         # --password admin \
-          #--firstname Admin \
-          #--lastname User \
-          #--role Admin \
-          #--email admin@example.com
-    #restart: "no"
+  airflow-init:
+    <<: *airflow-common
+    container_name: airflow-init
+    entrypoint: /bin/bash
+    command:
+      - -c
+      - |
+        airflow db init &&
+        airflow users create \
+          --username admin \
+          --password admin \
+          --firstname Admin \
+          --lastname User \
+          --role Admin \
+          --email admin@example.com
+    restart: "no"
 
-  #airflow-webserver:
-   # <<: *airflow-common
-    #command: webserver
-    #ports:
-     # - "8080:8080"
-    #restart: always
+  airflow-webserver:
+    <<: *airflow-common
+    container_name: airflow-webserver
+    command: webserver
+    ports:
+      - "8082:8080"
+    deploy:
+      resources:
+        limits:
+          cpus: "0.7"
+          memory: 1.2G
+    restart: always
 
-  #airflow-scheduler:
-   # <<: *airflow-common
-    #command: scheduler
-    #restart: always
+  airflow-scheduler:
+    <<: *airflow-common
+    container_name: airflow-scheduler
+    command: scheduler
+    deploy:
+      resources:
+        limits:
+          cpus: "0.6"
+          memory: 1G
+    restart: always
 
-  
   spark-master:
+    container_name: spark-master
     build: ./spark
     command: /usr/local/spark-3.4.1-bin-hadoop3/bin/spark-class org.apache.spark.deploy.master.Master
     ports:
-      - "7077:7077"    
-      - "8081:8080"   
+      - "7077:7077"
+      - "8080:8080"
     environment:
-    - SPARK_MODE=master 
+      - SPARK_MODE=master
+      - SPARK_MASTER_PORT=7077
+      - SPARK_MASTER_WEBUI_PORT=8080
+      - SPARK_MASTER_HOST=spark-master
+      - SPARK_MASTER=spark://spark-master:7077
+      - SPARK_MASTER_URL=spark://spark-master:7077
+    networks:
+      - default
+      - spark-net
     volumes:
-    - ./spark/scripts:/opt/scripts 
-    mem_limit: "1g"
-    cpus: 0.5
+      - ./spark/scripts:/opt/scripts
+      - ./shared_data:/opt/shared_data
+    deploy:
+      resources:
+        limits:
+          cpus: "0.8"
+          memory: 1.5G
 
   spark-worker:
+    container_name: spark-worker
     build: ./spark
     command: /usr/local/spark-3.4.1-bin-hadoop3/bin/spark-class org.apache.spark.deploy.worker.Worker spark://spark-master:7077
+    ports:
+      - "8081:8081"
     environment:
       - SPARK_MODE=worker
       - SPARK_MASTER_URL=spark://spark-master:7077
+      - SPARK_MASTER=spark://spark-master:7077
       - SPARK_WORKER_CORES=1
-      - SPARK_WORKER_MEMORY=512m
-    volumes:
-    - ./spark/scripts:/opt/scripts 
-    mem_limit: "1g"
-    cpus: 0.5
+      - SPARK_WORKER_MEMORY=1G
+      - SPARK_DRIVER_MEMORY=512m
     depends_on:
       - spark-master
-  
+    networks:
+      - default
+      - spark-net
+    volumes:
+      - ./spark/scripts:/opt/scripts
+      - ./shared_data:/opt/shared_data
+      - ./spark/work:/usr/local/spark/work
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 2G
+
   clickhouse:
+    container_name: clickhouse-server
     image: clickhouse/clickhouse-server:24.3
     user: "101:101"
-    container_name: clickhouse-server
     ports:
       - "8123:8123"
       - "9000:9000"
@@ -103,12 +155,28 @@ services:
       - CLICKHOUSE_USER=airflow
       - CLICKHOUSE_PASSWORD=airflow
       - CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT=1
-    volumes:
-      - clickhouse_data:/var/lib/clickhouse
     ulimits:
       nofile:
         soft: 262144
         hard: 262144
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse
+      - ./shared_data:/opt/shared_data
+    networks:
+      - default
+    deploy:
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 1G
+
+networks:
+  default:
+    driver: bridge
+  spark-net:
+    driver: bridge
+
 volumes:
-    clickhouse_data:
-  
+  clickhouse_data:
+  postgres_data:
+  shared_data:

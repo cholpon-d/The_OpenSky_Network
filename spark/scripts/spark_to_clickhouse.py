@@ -5,7 +5,7 @@ from pyspark.sql.window import Window
 
 def main():
     spark = SparkSession.builder \
-            .appName("OpenSkyDataETL") \
+            .appName("OpenSkyPostgres_to_ClickHouse") \
             .config("spark.log.level", "WARN") \
             .getOrCreate()
             
@@ -15,7 +15,7 @@ def main():
 
         df_raw = spark.read \
             .format("jdbc") \
-            .option("url", "jdbc:postgresql://postgres:5432/airflow") \
+            .option("url", "jdbc:postgresql://postgres-db:5432/airflow") \
             .option("dbtable", "raw_flights") \
             .option("user", "airflow") \
             .option("password", "airflow") \
@@ -23,7 +23,6 @@ def main():
             .load()
         
         print(f"Loaded {df_raw.count()} records from Postgres")
-
 
         if "geo_altitude" in df_raw.columns:
             df_raw = df_raw.withColumn("geo_altitude",
@@ -84,63 +83,52 @@ def main():
             .orderBy(desc("total_aircraft"))
         )
 
-        print("Writing to Postgres...")
-        
-        enriched_df.write \
-            .format("jdbc") \
-            .option("url", "jdbc:postgresql://postgres:5432/airflow") \
-            .option("dbtable", "enriched_flights") \
-            .option("user", "airflow") \
-            .option("password", "airflow") \
-            .option("driver", "org.postgresql.Driver") \
-            .mode("overwrite") \
-            .save()
-        print("enriched_flights saved to Postgres")
 
-        country_stats.write \
-            .format("jdbc") \
-            .option("url", "jdbc:postgresql://postgres:5432/airflow") \
-            .option("dbtable", "country_stats") \
-            .option("user", "airflow") \
-            .option("password", "airflow") \
-            .option("driver", "org.postgresql.Driver") \
-            .mode("overwrite") \
-            .save()
-        print("country_stats saved to Postgres")
-
-        write_to_clickhouse(enriched_df, country_stats)
-
-    except Exception as e:
-        print(f"ERROR: {e}")
-        import traceback
-        traceback.print_exc()
-
-    spark.stop()
-
-def write_to_clickhouse(enriched_df, country_stats):
-    try:
-        print("Starting Clickhouse export...")
-
-        clickhouse_url = "jdbc:clickhouse://clickhouse:8123/airflow"
-
-        clickhouse_optimized = enriched_df.select(
-            "icao24", "callsign", "origin_country", "event_time", "event_date",
-            coalesce(col("velocity_kmh"), lit(0)).alias("velocity_kmh"),
-            coalesce(col("baro_altitude"), lit(0)).alias("baro_altitude"),
-            coalesce(col("geo_altitude"), lit(0)).alias("geo_altitude"),
-            "rank_in_country", "speed_rank_global", "is_anomaly",
-            "time_of_day", "flight_status"
-            )
-    
         enriched_for_ch = enriched_df.select(
             "icao24", "callsign", "origin_country", "event_time", "event_date",
-            coalesce(col("velocity_kmh"), lit(0)).alias("velocity_kmh"),
-            coalesce(col("baro_altitude"), lit(0)).alias("baro_altitude"),
-            coalesce(col("geo_altitude"), lit(0)).alias("geo_altitude"),
-            "rank_in_country", "speed_rank_global", "avg_speed_in_country", 
-            "max_speed_in_country", "min_speed_in_country", "is_anomaly", 
-            "time_of_day", "flight_status"
+            coalesce(round(col("velocity_kmh"), 2), lit(0)).alias("velocity_kmh"),
+            coalesce(round(col("baro_altitude"), 2), lit(0)).alias("baro_altitude"),
+            coalesce(round(col("geo_altitude"), 2), lit(0)).alias("geo_altitude"),
+            "rank_in_country", "speed_rank_global", 
+            round(col("avg_speed_in_country"), 2).alias("avg_speed_in_country"),
+            round(col("max_speed_in_country"), 2).alias("max_speed_in_country"),
+            round(col("min_speed_in_country"), 2).alias("min_speed_in_country"),
+            "is_anomaly", "time_of_day", "flight_status"
         )
+
+        clickhouse_analytics = (enriched_df
+            .groupBy("origin_country", "event_date", "time_of_day", "flight_status", "velocity_category")
+            .agg(
+                count("*").alias("flight_count"),
+                round(avg("velocity_kmh"), 2).alias("avg_velocity_kmh"),
+                round(avg("baro_altitude"), 2).alias("avg_baro_altitude"),
+                round(avg("geo_altitude"), 2).alias("avg_geo_altitude"),
+                sum("is_anomaly").alias("anomaly_count"),
+                count_distinct("icao24").alias("unique_aircraft"),
+                round(min("velocity_kmh"), 2).alias("min_velocity_kmh"),
+                round(max("velocity_kmh"), 2).alias("max_velocity_kmh"),
+                round(percentile_approx("velocity_kmh", 0.5), 2).alias("median_velocity_kmh")
+            )
+            .withColumn("anomaly_percentage", round((col("anomaly_count") / col("flight_count")) * 100, 2))
+            .withColumn("load_timestamp", current_timestamp())
+        )
+
+
+        clickhouse_analytics_for_ch = clickhouse_analytics.select(
+            "origin_country", "event_date", "time_of_day", "flight_status", "velocity_category",
+            "flight_count", "avg_velocity_kmh", "avg_baro_altitude", "avg_geo_altitude",
+            "anomaly_count", "unique_aircraft", "min_velocity_kmh", "max_velocity_kmh",
+            "median_velocity_kmh", "anomaly_percentage"
+        )
+        
+        country_stats_for_ch = country_stats.select(
+            "origin_country", "total_aircraft", 
+            round(col("avg_speed_kmh"), 2).alias("avg_speed_kmh"),
+            "unique_flights", "anomaly_count", "global_rank", 
+            round(col("percentage_of_total"), 2).alias("percentage_of_total")
+        )
+
+        clickhouse_url = "jdbc:clickhouse://clickhouse-server:8123/airflow"
 
         enriched_for_ch.write \
             .format("jdbc") \
@@ -154,12 +142,6 @@ def write_to_clickhouse(enriched_df, country_stats):
             .save()
         print("enriched_flights saved to ClickHouse")
 
-        country_stats_for_ch = country_stats.select(
-            "origin_country", "total_aircraft", "avg_speed_kmh", 
-            "unique_flights", "anomaly_count", "global_rank", 
-            "percentage_of_total"
-        )
-
         country_stats_for_ch.write \
             .format("jdbc") \
             .option("url", clickhouse_url) \
@@ -172,7 +154,7 @@ def write_to_clickhouse(enriched_df, country_stats):
             .save()
         print("country_stats saved to ClickHouse")
 
-        clickhouse_optimized.write \
+        clickhouse_analytics_for_ch.write \
             .format("jdbc") \
             .option("url", clickhouse_url) \
             .option("dbtable", "flights_analytics") \
@@ -184,10 +166,15 @@ def write_to_clickhouse(enriched_df, country_stats):
             .save()
         print("flights_analytics saved to ClickHouse")
 
+        print("All data successfully written to ClickHouse")
+
     except Exception as e:
-        print(f"ClickHouse error: {e}")
+        print(f"ERROR: {e}")
         import traceback
         traceback.print_exc()
+
+    spark.stop()
+
 
 if __name__ == "__main__":
     main()
