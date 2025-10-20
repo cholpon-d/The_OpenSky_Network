@@ -7,11 +7,11 @@
 
 ### 🛰️ Data Flow
 
-**OpenSky API → 🪶 Airflow → 🐘 PostgreSQL → ⚡ Spark → 🏭 ClickHouse**
+**OpenSky API → 🚀 Airflow → 🐘 PostgreSQL → ⚡ Spark → 🏭 ClickHouse**
 
 | Component             | Role                                            |
 | --------------------- | ----------------------------------------------- |
-| 🪶 **Airflow**        | Orchestrates DAGs for API ingestion & data flow |
+| 🚀 **Airflow**        | Orchestrates DAGs for API ingestion & data flow |
 | ⚡ **Spark**          | Transforms and processes flight data            |
 | 🏭 **ClickHouse**     | Stores processed data for analytics             |
 | 🐘 **PostgreSQL**     | Used by Airflow as metadata & staging DB        |
@@ -73,7 +73,7 @@ Then restart all services:
 
 Service URL Description
 
-🪶 Airflow Web UI http://localhost:8082 DAG management & monitoring
+🚀 Airflow Web UI http://localhost:8082 DAG management & monitoring
 
 ⚡ Spark Master UI http://localhost:8080 Spark jobs & worker status
 
