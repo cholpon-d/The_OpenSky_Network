@@ -85,7 +85,7 @@ def fetch_and_load():
 with DAG(
     dag_id="open_sky_to_postgres_airflow",
     default_args=default_args,
-    start_date=datetime(2024, 1, 1),
+    start_date=datetime(2025, 10, 1),
     schedule_interval="0 * * * *",  
     catchup=False,
     tags=["opensky", "postgres"]
